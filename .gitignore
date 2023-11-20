@@ -1,0 +1,16 @@
+*-backups
+*-bak
+*-cache
+*.bmp
+*.dsn
+*.png
+*.csv
+*.pos
+*.zip
+*.gbr
+*.drl
+*.step
+*.FCStd1
+*.FCBak
+.pio
+.vscode
