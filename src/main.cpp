@@ -498,8 +498,8 @@ configDefault(void)
 	WiFi.macAddress().toCharArray(conf.hostname, 32);
 	conf.magic = MAGIC;
 	strcpy(conf.timezone, "EST5EDT,M3.2.0,M11.1.0");
-	strcpy(conf.ssid, "WhoRU");
-	strcpy(conf.wpakey, "1609615265");
+	strcpy(conf.ssid, "");
+	strcpy(conf.wpakey, "");
 	strcpy(conf.ntpserver, "pool.ntp.org");
 }
 
@@ -627,7 +627,7 @@ handleRoot()
 	pos = snprintf(body, 2048,
 		"<html>"
 		"<head>"
-		"<meta http-equiv='Refresh' content='5'>"
+		"<meta http-equiv='Refresh' content='60'>"
 		"<title>CatFlap [%s]</title>\n"
 		"<style>body { background-color: #cccccc; font-family: Arial, Helvetica, Sans-Serif; Color: #000088; }</style>"
 		"</head>\n"
@@ -643,7 +643,7 @@ handleRoot()
 			continue;
 		tm = localtime(&catTime[i]);
 		strftime(timestr, 20, "%F %T", tm);
-		pos += snprintf(body + pos, 2048 - pos, "<tr><td width='40%%'>%s</td><td>%s </td><td>%s</td></tr>", 
+		pos += snprintf(body + pos, 2048 - pos, "<tr><td>%s</td><td>%s</td><td>%s</td></tr>",
 		conf.cat[i].name, catInOut & (1 << i) ? "In" : "Out", timestr);
 	}
 
