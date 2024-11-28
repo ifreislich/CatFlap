@@ -53,6 +53,7 @@ struct cfg {
 	uint8_t		flags;
 	struct {
 		 char		name[20];
+		 char		topic[64];
 		 uint8_t	facility;
 		 uint16_t	id;
 		 uint8_t	flags;
@@ -81,7 +82,7 @@ struct cfg {
 
 #define WEIGAND_TIMEOUT				20	// timeout in ms on Wiegand sequence 
 #define DOOR_TIMEOUT_DEFAULT		60	// Door stays unlocked for max X seconds
-#define DOOR_SWING_TIMEOUT_DEFAULT	5	// Door stays unlocked for max X seconds
+#define DOOR_SWING_TIMEOUT_DEFAULT	3	// Door stays unlocked for max X seconds
 
 #define LOCK	0
 #define OPEN	1
@@ -122,6 +123,7 @@ volatile u_long		doorTrigger;
 
 void debug(byte, const char *, ...);
 const char *catName(uint8_t, uint16_t);
+const char *catTopic(uint8_t, uint16_t);
 int catNumber(uint8_t, uint16_t);
 int checkCard(enum direction, uint8_t, uint16_t);
 void configInit(void);
@@ -131,7 +133,7 @@ void exitLock(void);
 void exitUnlock(void);
 void entryLock(void);
 void entryUnlock(void);
-void ntfy(const char *, const char *, const uint8_t, const char *, ...);
+void ntfy(const char *, const char *, const char *, const uint8_t, const char *, ...);
 void ntpCallBack(void);
 int weigandDecode(uint8_t *, uint16_t *, uint8_t, uint64_t);
 
@@ -155,7 +157,7 @@ setup()
 	while (!Serial);
 	Serial.println();
 	debug(true, "Startup, reason: %s", (ESP.getResetReason()).c_str());
-	EEPROM.begin(1024);
+	EEPROM.begin(1536);
 	configInit();
 
 	analogWriteFreq(400);
@@ -213,7 +215,7 @@ setup()
 				//SPIFFS.end();
 				break;
 		}
-		ntfy(WiFi.getHostname(), "floppy_disk", 3, "Updating: %s", type);
+		ntfy(conf.ntfy.topic, WiFi.getHostname(), "floppy_disk", 3, "Updating: %s", type);
 	});
 	ArduinoOTA.onEnd([]() {
 		state |= STATE_OTA_FLASH;
@@ -277,7 +279,7 @@ loop()
 	webserver.handleClient();
 	// We don't have an IP address until long after setup exits and sending the notification during the callback causes a crash
 	if (~state & STATE_BOOTUP_NTFY && state & STATE_GOT_IP_ADDRESS) {
-		ntfy(WiFi.getHostname(), "facepalm", 3, "Boot up %6.3f seconds ago\\nReset cause: %s\\nFirmware %s %s",
+		ntfy(conf.ntfy.topic, WiFi.getHostname(), "facepalm", 3, "Boot up %6.3f seconds ago\\nReset cause: %s\\nFirmware %s %s",
 		  millis() / 1000.0, (ESP.getResetReason()).c_str(), __DATE__, __TIME__);
 		state |= STATE_BOOTUP_NTFY;
 	}
@@ -291,14 +293,14 @@ loop()
 		if (weigandDecode(&facilityCode, &cardCode, entryBitCount, entryDataBits) && ~state & STATE_EXIT_OPEN) {
 			switch (checkCard(ENTRY, facilityCode, cardCode)) {
 				case 0:
-					ntfy(WiFi.getHostname(), "stop_sign", 3, "Entry denied for %s", catName(facilityCode, cardCode));
+					ntfy(catTopic(facilityCode, cardCode), WiFi.getHostname(), "stop_sign", 3, "Entry denied for %s", catName(facilityCode, cardCode));
 					debug(true, "Entry denied for %s", catName(facilityCode, cardCode));
 					break;
 				case 1:
 					entryUnlock();
 					entryCloseAt = time(NULL) + DOOR_TIMEOUT_DEFAULT;
 					if (lastFacilityCode != facilityCode && lastCardCode != cardCode) {
-						ntfy(WiFi.getHostname(), "unlock,arrow_left", 3, "%s Entry", catName(facilityCode, cardCode));
+						ntfy(catTopic(facilityCode, cardCode), WiFi.getHostname(), "unlock,arrow_left", 3, "%s Entry", catName(facilityCode, cardCode));
 						catNum = catNumber(facilityCode, cardCode);
 						if (catNum < CFG_NCATS) {
 							catTime[catNum] = time(NULL);
@@ -321,14 +323,14 @@ loop()
 		if (weigandDecode(&facilityCode, &cardCode, exitBitCount, exitDataBits) && ~state & STATE_ENTRY_OPEN) {
 			switch (checkCard(EXIT, facilityCode, cardCode)) {
 				case 0:
-					ntfy(WiFi.getHostname(), "stop_sign", 3, "Exit denied for %s", catName(facilityCode, cardCode));
+					ntfy(catTopic(facilityCode, cardCode), WiFi.getHostname(), "stop_sign", 3, "Exit denied for %s", catName(facilityCode, cardCode));
 					debug(true, "Entry denied for %s", catName(facilityCode, cardCode));
 					break;
 				case 1:
 					exitUnlock();
 					exitCloseAt = time(NULL) + DOOR_TIMEOUT_DEFAULT;
 					if (lastFacilityCode != facilityCode && lastCardCode != cardCode) {
-						ntfy(WiFi.getHostname(), "arrow_right,unlock", 3, "%s Exit", catName(facilityCode, cardCode));
+						ntfy(catTopic(facilityCode, cardCode), WiFi.getHostname(), "arrow_right,unlock", 3, "%s Exit", catName(facilityCode, cardCode));
 						catNum = catNumber(facilityCode, cardCode);
 						if (catNum < CFG_NCATS) {
 							catTime[catNum] = time(NULL);
@@ -359,13 +361,13 @@ loop()
 	}
 	if (~state & STATE_ENTRY_OPEN && ~state & STATE_ENTRY_LOCKED_OPEN && time(NULL) - entryCloseTime < 2 && digitalRead(PIN_DOOR_SENSOR)) {
 		entryUnlock();
-		ntfy(WiFi.getHostname(), "lock,unlock", 3, "Locked open (entry)");
+		ntfy(conf.ntfy.topic, WiFi.getHostname(), "lock,unlock", 3, "Locked open (entry)");
 		debug(true, "Locked open (entry)");
 		state |= STATE_ENTRY_LOCKED_OPEN;
 	}
 	if (~state & STATE_EXIT_OPEN && ~state & STATE_EXIT_LOCKED_OPEN && time(NULL) - exitCloseTime < 2 && digitalRead(PIN_DOOR_SENSOR)) {
 		exitUnlock();
-		ntfy(WiFi.getHostname(), "lock,unlock", 3, "Locked open (exit)");
+		ntfy(conf.ntfy.topic, WiFi.getHostname(), "lock,unlock", 3, "Locked open (exit)");
 		debug(true, "Locked open (exit)");
 		state |= STATE_EXIT_LOCKED_OPEN;
 	}
@@ -460,7 +462,7 @@ checkCard(enum direction dir, uint8_t facilityCode, uint16_t cardCode)
 
 	if (i == CFG_NCATS) {
 		debug(true, "Unknown Card: facility %d, card %d", facilityCode, cardCode);
-		ntfy(WiFi.getHostname(), "interrobang", 3, "Unknown Card: facility %d, card %d", facilityCode, cardCode);
+		ntfy(conf.ntfy.topic, WiFi.getHostname(), "interrobang", 3, "Unknown Card: facility %d, card %d", facilityCode, cardCode);
 		return(-1);
 	}
 
@@ -470,15 +472,23 @@ checkCard(enum direction dir, uint8_t facilityCode, uint16_t cardCode)
 const char *
 catName(uint8_t facilityCode, uint16_t cardCode)
 {
-	int i;
-	for (i = 0; i < CFG_NCATS; i++)
-		if (conf.cat[i].facility == facilityCode && conf.cat[i].id == cardCode)
-			break;
+	int i = catNumber(facilityCode, cardCode);
 
 	if (i == CFG_NCATS)
 		return("Unnamed");
 		
 	return(conf.cat[i].name);
+}
+
+const char *
+catTopic(uint8_t facilityCode, uint16_t cardCode)
+{
+	int i = catNumber(facilityCode, cardCode);
+
+	if (i == CFG_NCATS || !strlen(conf.cat[i].topic))
+		return(conf.ntfy.topic);
+		
+	return(conf.cat[i].topic);
 }
 
 int
@@ -556,7 +566,7 @@ debug(byte logtime, const char *format, ...)
 // tags: https://docs.ntfy.sh/emojis/
 // priority: https://docs.ntfy.sh/publish/#message-priority
 void
-ntfy(const char *title, const char *tags, const uint8_t priority, const char *format, ...)
+ntfy(const char *topic, const char *title, const char *tags, const uint8_t priority, const char *format, ...)
 {
 	HTTPClient  http;
 	WiFiClient  client;
@@ -591,7 +601,7 @@ ntfy(const char *title, const char *tags, const uint8_t priority, const char *fo
 		"\"priority\":%d,"
 		"\"message\":\"%s\""
 	"}";
-	content_length = snprintf(buffer, 3072, post_data, conf.ntfy.topic, title, tags, priority, message);
+	content_length = snprintf(buffer, 3072, post_data, topic, title, tags, priority, message);
 	http.POST(reinterpret_cast<const uint8_t *>(buffer), content_length);
 
 	http.end();
@@ -665,11 +675,11 @@ handleConfig()
 {
 	char *body, *temp;
 
-	if ((body = static_cast<char *>(malloc(7000))) == NULL) {
+	if ((body = static_cast<char *>(malloc(8800))) == NULL) {
 		debug(true, "WEB / failed to allocate memory");
 		return;
 	}
-	if ((temp = static_cast<char *>(malloc(690))) == NULL) {
+	if ((temp = static_cast<char *>(malloc(865))) == NULL) {
 		free(body);
 		return;
 	}
@@ -701,15 +711,16 @@ handleConfig()
 
 	// max 576 characters per cat
 	for (int i = 0; i < CFG_NCATS; i++) {
-		snprintf(temp, 687,
+		snprintf(temp, 865,
 			"<table border=0 width='520' cellspacing=4 cellpadding=0>\n"
 			"<tr><td width='40%%'>Cat %d:</td><td><input name='catname%d' type='text' value='%s' size='19' maxlength='19'></td></tr>\n"
+			"<tr><td width='40%%'>Topic:</td><td><input name='topic%d' type='text' value='%s' size='31' maxlength='63'></td></tr>\n"
 			"<tr><td width='40%%'>Facility Code:</td><td><input name='facility%d' type='number' size='4' value='%d' min='0' max='255'></td></tr>\n"
 			"<tr><td width='40%%'>Tag ID:</td><td><input name='id%d' type='number' size='8' value='%d' min='0' max='8191'></td></tr>\n"
 			"<tr><td width='40%%'>Entry:</td><td><input name='entry%d' type='checkbox' value='true' %s></td></tr>\n"
 			"<tr><td width='40%%'>Exit:</td><td><input name='exit%d' type='checkbox' value='true' %s></td></tr>"
 			"</table><p>",
-			i + 1, i, conf.cat[i].name, i, conf.cat[i].facility, i, conf.cat[i].id,
+			i + 1, i, conf.cat[i].name, i, conf.cat[i].topic, i, conf.cat[i].facility, i, conf.cat[i].id,
 			i, conf.cat[i].flags & CFG_CAT_ENTRY ? "checked" : "",
 			i, conf.cat[i].flags & CFG_CAT_EXIT ? "checked" : "");
 		strcat(body, temp);
@@ -822,6 +833,12 @@ handleSave()
 		if (webserver.hasArg(temp)) {
 			value = webserver.urlDecode(webserver.arg(temp));
 			strncpy(conf.cat[i].name, value.c_str(), 20);
+		}
+
+		snprintf(temp, 399, "topic%d", i);
+		if (webserver.hasArg(temp)) {
+			value = webserver.urlDecode(webserver.arg(temp));
+			strncpy(conf.cat[i].topic, value.c_str(), 64);
 		}
 
 		snprintf(temp, 399, "facility%d", i);
