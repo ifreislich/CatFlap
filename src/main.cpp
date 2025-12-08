@@ -37,8 +37,6 @@
 #include <lwip/def.h>
 #include <time.h>
 #include <sys/time.h>
-#include <WiFiClient.h>
-#include <WiFiUdp.h>
 #include <Wire.h>
 
 #define MAGIC		0xd41d8cd5
@@ -104,6 +102,7 @@ enum direction {EXIT, ENTRY};
 #define STATE_EXIT_LOCKED_OPEN		0x0400
 
 WiFiUDP				udp;
+MDNSResponder		MDNS;
 ESP8266WebServer	webserver(80);
 WiFiEventHandler	eventConnected, eventDisconnected, eventGotIP;
 
@@ -151,7 +150,7 @@ void IRAM_ATTR ISR_DOOR(void);
 void
 setup()
 {
-	char      hostname[42];
+	char      hostname[44];
 
 	Serial.begin(115200);
 	while (!Serial);
@@ -172,8 +171,12 @@ setup()
 	pinMode(PIN_DOOR_SENSOR, INPUT_PULLUP);
 
 	eventGotIP = WiFi.onStationModeGotIP([](const WiFiEventStationModeGotIP& event) {
+		char	hostname[44];
 		debug(true, "IP address %s", WiFi.localIP().toString());
 		state |= STATE_GOT_IP_ADDRESS;
+		snprintf(hostname, 43, "CatFlap-%s", conf.hostname);
+		MDNS.begin(hostname);
+		MDNS.addDynamicServiceTxt("http", "tcp", 80);
 	});
 	eventConnected = WiFi.onStationModeConnected([](const WiFiEventStationModeConnected& event) {
 		debug(true, "WiFi Connected");
@@ -190,12 +193,11 @@ setup()
 		}
 	});
 	
-	snprintf(hostname, 42, "CatFlap-%s", conf.hostname);
+	snprintf(hostname, 43, "CatFlap-%s", conf.hostname);
 	WiFi.mode(WIFI_STA);
 	WiFi.hostname(hostname);
 	WiFi.begin(conf.ssid, conf.wpakey);
 	Wire.begin();
-	MDNS.begin(hostname);
 
 	bootTime = time(NULL);
 	configTzTime(conf.timezone, conf.ntpserver);
@@ -222,7 +224,7 @@ setup()
 		debug(true, "Flashing...");
 	});
 	ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-			Serial.printf("Received: %7d of %7d\r", progress, total);
+			//Serial.printf("Received: %7d of %7d\r", progress, total);
 	});
 	ArduinoOTA.onError([](ota_error_t error) {
 		state &= ~STATE_OTA_FLASH;
@@ -277,6 +279,7 @@ loop()
 
 	ArduinoOTA.handle();
 	webserver.handleClient();
+	MDNS.update();
 	// We don't have an IP address until long after setup exits and sending the notification during the callback causes a crash
 	if (~state & STATE_BOOTUP_NTFY && state & STATE_GOT_IP_ADDRESS) {
 		ntfy(conf.ntfy.topic, WiFi.getHostname(), "facepalm", 3, "Boot up %6.3f seconds ago\\nReset cause: %s\\nFirmware %s %s",
@@ -571,6 +574,9 @@ ntfy(const char *topic, const char *title, const char *tags, const uint8_t prior
 	HTTPClient  http;
 	WiFiClient  client;
 	va_list     pvar;
+	char        timestr[20];
+	time_t      t;
+	struct tm  *tm;
 	char       *buffer, *message;
 	int         content_length;
 
@@ -590,6 +596,10 @@ ntfy(const char *topic, const char *title, const char *tags, const uint8_t prior
 	vsnprintf(message, 2048, format, pvar);
 	va_end(pvar);
 
+	t = time(NULL);
+	tm = localtime(&t);
+	strftime(timestr, 20, "%F %T", tm);
+
 	http.setAuthorization(conf.ntfy.username, conf.ntfy.password);
 	http.begin(client, static_cast<const char *>(conf.ntfy.url));
 	http.addHeader("Content-Type", "application/json");
@@ -599,9 +609,9 @@ ntfy(const char *topic, const char *title, const char *tags, const uint8_t prior
 		"\"title\":\"%s\","
 		"\"tags\":[\"%s\"],"
 		"\"priority\":%d,"
-		"\"message\":\"%s\""
+		"\"message\":\"%s\\n%s\""
 	"}";
-	content_length = snprintf(buffer, 3072, post_data, topic, title, tags, priority, message);
+	content_length = snprintf(buffer, 3072, post_data, topic, title, tags, priority, timestr, message);
 	http.POST(reinterpret_cast<const uint8_t *>(buffer), content_length);
 
 	http.end();
@@ -697,7 +707,7 @@ handleConfig()
 		"<tr><td width='40%%'>SSID:</td><td><input name='ssid' type='text' value='%s' size='31' maxlength='63'></td></tr>\n"
 		"<tr><td width='40%%'>WPA Pass Phrase:</td><td><input name='key' type='text' value='%s' size='31' maxlength='63'></td></tr>\n"
 		"<tr><td width='40%%'>NTP Server:</td><td><input name='ntp' type='text' value='%s' size='31' maxlength='63' "
-			"pattern='^([a-z0-9]+)(\\.)([_a-z0-9]+)((\\.)([_a-z0-9]+))?$' title='A valid hostname'></td></tr>\n"
+			"pattern='^(([a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9\\-]*[a-zA-Z0-9])\\.)*([A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9\\-]*[A-Za-z0-9])$' title='A valid hostname'></td></tr>\n"
 		"<tr><td width='40%%'>Timezone:</td><td><input name='tz' type='text' value='%s' size='31' maxlength='31'></td></tr>\n"
 		"<tr><td width='40%%'>Notifications:</td><td><input name='ntfy' type='checkbox' value='true' %s></td></tr>\n"
 		"<tr><td width='40%%'>Service URL:</td><td><input name='url' type='text' value='%s' size='31' maxlength='63'></td></tr>\n"
@@ -742,13 +752,10 @@ handleConfig()
 void
 handleReboot()
 {
-	char *body;
+	WiFiClient client = webserver.client();
 
-	if ((body = static_cast<char *>(malloc(500))) == NULL) {
-		debug(true, "WEB / failed to allocate memory");
-		return;
-	}
-	snprintf(body, 500,
+	client.print("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n");
+	client.printf(
 		"<html>"
 		"<head>"
 		"<title>CatFlap [%s]</title>\n"
@@ -759,9 +766,7 @@ handleReboot()
 		"<meta http-equiv='Refresh' content='5; url=/'>"
 		"</body>\n"
 		"</html>", conf.hostname);
-
-	webserver.send(200, "text/html", body);
-	free(body);
+	client.stop();
 	delay(100);
 	state |= STATE_OTA_FLASH;
 	ESP.restart();
@@ -781,26 +786,31 @@ handleSave()
 	if (webserver.hasArg("name")) {
 		value = webserver.urlDecode(webserver.arg("name"));
 		strncpy(conf.hostname, value.c_str(), 32);
+		conf.hostname[31] = '\0';
 	}
 
 	if (webserver.hasArg("ssid")) {
 		value = webserver.urlDecode(webserver.arg("ssid"));
 		strncpy(conf.ssid, value.c_str(), 64);
+		conf.ssid[63] = '\0';
 	}
 
 	if (webserver.hasArg("key")) {
 		value = webserver.urlDecode(webserver.arg("key"));
 		strncpy(conf.wpakey, value.c_str(), 64);
+		conf.wpakey[63] = '\0';
 	}
 
 	if (webserver.hasArg("ntp")) {
 		value = webserver.urlDecode(webserver.arg("ntp"));
 		strncpy(conf.ntpserver, value.c_str(), 32);
+		conf.ntpserver[31] = '\0';
 	}
 
 	if (webserver.hasArg("tz")) {
 		value = webserver.urlDecode(webserver.arg("tz"));
 		strncpy(conf.timezone, value.c_str(), 32);
+		conf.ntpserver[31] = '\0';
 	}
 
 	if (webserver.hasArg("ntfy"))
@@ -811,21 +821,25 @@ handleSave()
 	if (webserver.hasArg("url")) {
 		value = webserver.urlDecode(webserver.arg("url"));
 		strncpy(conf.ntfy.url, value.c_str(), 64);
+		conf.ntfy.url[63] = '\0';
 	}
 
 	if (webserver.hasArg("topic")) {
 		value = webserver.urlDecode(webserver.arg("topic"));
 		strncpy(conf.ntfy.topic, value.c_str(), 64);
+		conf.ntfy.topic[63] = '\0';
 	}
 
 	if (webserver.hasArg("user")) {
 		value = webserver.urlDecode(webserver.arg("user"));
 		strncpy(conf.ntfy.username, value.c_str(), 16);
+		conf.ntfy.username[15] = '\0';
 	}
 
 	if (webserver.hasArg("passwd")) {
 		value = webserver.urlDecode(webserver.arg("passwd"));
 		strncpy(conf.ntfy.password, value.c_str(), 16);
+		conf.ntfy.password[15] = '\0';
 	}
 
 	for (int i=0; i < CFG_NCATS; i++) {
@@ -833,12 +847,14 @@ handleSave()
 		if (webserver.hasArg(temp)) {
 			value = webserver.urlDecode(webserver.arg(temp));
 			strncpy(conf.cat[i].name, value.c_str(), 20);
+			conf.cat[i].name[19] = '\0';
 		}
 
 		snprintf(temp, 399, "topic%d", i);
 		if (webserver.hasArg(temp)) {
 			value = webserver.urlDecode(webserver.arg(temp));
 			strncpy(conf.cat[i].topic, value.c_str(), 64);
+			conf.cat[i].topic[63] = '\0';
 		}
 
 		snprintf(temp, 399, "facility%d", i);
