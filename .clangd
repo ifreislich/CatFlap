@@ -1,0 +1,20 @@
+Hover:
+  ShowAKA: Yes
+  MacroContentsLimit: 2048
+CompileFlags:
+  Add:
+    [
+      -ferror-limit=0
+    ]
+  Remove:
+    [
+			-mlongcalls,
+			-mtext-section-literals,
+			-free,
+			-fipa-pta
+    ]
+Diagnostics:
+  UnusedIncludes: Strict
+  Suppress:
+    [
+    ]
