@@ -14,3 +14,4 @@
 *.FCBak
 .pio
 .vscode
+compile_commands.json
